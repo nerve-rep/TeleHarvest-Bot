@@ -2,6 +2,7 @@ import logging
 import json
 import datetime
 import os
+import re
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from config import BOT_TOKEN, API_ID, API_HASH
@@ -14,37 +15,29 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# Helper для конвертации datetime в строку
+# Helper для конвертации данных, несериализуемых в JSON по умолчанию
 def json_serial(obj):
     """JSON serializer for objects not serializable by default json code"""
     if isinstance(obj, (datetime.datetime, datetime.date)):
         return obj.isoformat()
+    if isinstance(obj, bytes):
+        return obj.decode('utf-8', 'ignore')
     raise TypeError ("Type %s not serializable" % type(obj))
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Отправляет сообщение, когда пользователь вводит команду /start."""
-    user = update.effective_user
-    await update.message.reply_html(
-        rf"Привет, {user.mention_html()}! Отправь мне ссылку на открытый Telegram-канал (например, https://t.me/durov), и я выгружу последние 10 постов в JSON-файл.",
-    )
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Отправляет сообщение, когда пользователь вводит команду /help."""
-    await update.message.reply_text("Отправь мне ссылку на канал, чтобы я начал работать.")
-
-async def fetch_and_save_posts(channel_url: str) -> str:
+async def fetch_and_save_posts(channel_url: str, limit: int = 10) -> str:
     """
-    Подключается к Telethon, выгружает посты из канала и сохраняет их в JSON-файл.
-    Возвращает путь к созданному файлу.
+    Подключается к Telethon с русским языковым кодом, выгружает посты и сохраняет их в JSON.
+    Возвращает путь к файлу и имя канала.
     """
-    client = TelegramClient('user_session', int(API_ID), API_HASH)
+    # Создаем клиент с указанием языка для получения локализованного контента
+    client = TelegramClient('user_session', int(API_ID), API_HASH, lang_code='ru')
     file_path = None
     try:
         await client.start()
 
         entity = await client.get_entity(channel_url)
-        messages = await client.get_messages(entity, limit=10)
+        messages = await client.get_messages(entity, limit=limit)
         
         if not messages:
             raise ValueError("В канале нет постов или не удалось их получить.")
@@ -52,6 +45,7 @@ async def fetch_and_save_posts(channel_url: str) -> str:
         posts_data = []
         for msg in reversed(messages):
             if msg:
+                # Возвращаемся к сокращенному формату JSON
                 post_text = msg.text if msg.text is not None else ""
                 posts_data.append({
                     'id': msg.id,
@@ -74,23 +68,27 @@ async def fetch_and_save_posts(channel_url: str) -> str:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Отправляет приветственное сообщение."""
-    user = update.effective_user
-    await update.message.reply_html(
-        rf"Привет, {user.mention_html()}! Отправь мне ссылку на открытый Telegram-канал, и я выгружу последние 10 постов в JSON-файл.",
-    )
+    await update.message.reply_text("Отправь мне ссылку на канал и, через пробел, количество постов (например, https://t.me/durov 50).")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Отправляет справочное сообщение."""
-    await update.message.reply_text("Отправь мне ссылку на канал, чтобы я начал работать.")
+    await update.message.reply_text("Отправь ссылку на канал и количество постов (по умолчанию 10).")
 
 async def download_posts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик для бота: вызывает основную логику и отправляет результат."""
-    channel_url = update.message.text
-    await update.message.reply_text("Начинаю выгрузку постов... Это может занять некоторое время.")
+    match = re.match(r'(https://t.me/\w+)\s*(\d*)', update.message.text)
+    if not match:
+        await update.message.reply_text("Неверный формат. Пожалуйста, отправь ссылку в формате https://t.me/channel_name [количество].")
+        return
+
+    channel_url = match.group(1)
+    limit = int(match.group(2)) if match.group(2) else 10
+    
+    await update.message.reply_text(f"Начинаю выгрузку {limit} постов... Это может занять некоторое время.")
     
     file_path = None
     try:
-        file_path, channel_name = await fetch_and_save_posts(channel_url)
+        file_path, channel_name = await fetch_and_save_posts(channel_url, limit)
         
         with open(file_path, 'rb') as document:
             await update.message.reply_document(document=document, filename=file_path, caption=f"Посты из канала @{channel_name}")
@@ -99,7 +97,6 @@ async def download_posts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         logger.error(f"Ошибка при выгрузке постов: {e}")
         await update.message.reply_text(f"Произошла ошибка: {e}")
     finally:
-        # Удаляем временный файл после отправки
         if file_path and os.path.exists(file_path):
             os.remove(file_path)
 
@@ -110,7 +107,7 @@ def main() -> None:
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(MessageHandler(filters.Regex(r'https://t.me/\w+') & ~filters.COMMAND, download_posts))
+    application.add_handler(MessageHandler(filters.Regex(r'https://t.me/\w+(\s*\d*)?') & ~filters.COMMAND, download_posts))
 
     application.run_polling()
 
