@@ -33,11 +33,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     """Отправляет сообщение, когда пользователь вводит команду /help."""
     await update.message.reply_text("Отправь мне ссылку на канал, чтобы я начал работать.")
 
-async def download_posts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Выгружает посты из канала в JSON-файл и отправляет его."""
-    channel_url = update.message.text
-    await update.message.reply_text("Начинаю выгрузку постов в JSON... Это может занять некоторое время.")
-
+async def fetch_and_save_posts(channel_url: str) -> str:
+    """
+    Подключается к Telethon, выгружает посты из канала и сохраняет их в JSON-файл.
+    Возвращает путь к созданному файлу.
+    """
     client = TelegramClient('user_session', int(API_ID), API_HASH)
     file_path = None
     try:
@@ -47,15 +47,11 @@ async def download_posts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         messages = await client.get_messages(entity, limit=10)
         
         if not messages:
-            await update.message.reply_text("В канале нет постов или не удалось их получить.")
-            return
+            raise ValueError("В канале нет постов или не удалось их получить.")
 
         posts_data = []
-        # Переворачиваем сообщения, чтобы они были в хронологическом порядке
         for msg in reversed(messages):
             if msg:
-                # Telethon помещает текст или подпись в атрибут .text
-                # Просто проверяем, что он не None
                 post_text = msg.text if msg.text is not None else ""
                 posts_data.append({
                     'id': msg.id,
@@ -65,21 +61,44 @@ async def download_posts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     'sender_id': msg.sender_id,
                 })
         
-        # Сохраняем в файл
         file_path = f'posts_{entity.username}.json'
         with open(file_path, 'w', encoding='utf-8') as f:
             json.dump(posts_data, f, ensure_ascii=False, indent=4, default=json_serial)
+        
+        return file_path, entity.username
 
-        # Отправляем файл пользователю, открыв его в бинарном режиме
-        with open(file_path, 'rb') as document:
-            await update.message.reply_document(document=document, filename=file_path, caption=f"Посты из канала @{entity.username}")
-
-    except Exception as e:
-        logger.error(f"Ошибка при выгрузке постов: {e}")
-        await update.message.reply_text(f"Произошла ошибка: {e}. Убедитесь, что ссылка на канал верна и он публичный.")
     finally:
         if client.is_connected():
             await client.disconnect()
+
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Отправляет приветственное сообщение."""
+    user = update.effective_user
+    await update.message.reply_html(
+        rf"Привет, {user.mention_html()}! Отправь мне ссылку на открытый Telegram-канал, и я выгружу последние 10 постов в JSON-файл.",
+    )
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Отправляет справочное сообщение."""
+    await update.message.reply_text("Отправь мне ссылку на канал, чтобы я начал работать.")
+
+async def download_posts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработчик для бота: вызывает основную логику и отправляет результат."""
+    channel_url = update.message.text
+    await update.message.reply_text("Начинаю выгрузку постов... Это может занять некоторое время.")
+    
+    file_path = None
+    try:
+        file_path, channel_name = await fetch_and_save_posts(channel_url)
+        
+        with open(file_path, 'rb') as document:
+            await update.message.reply_document(document=document, filename=file_path, caption=f"Посты из канала @{channel_name}")
+
+    except Exception as e:
+        logger.error(f"Ошибка при выгрузке постов: {e}")
+        await update.message.reply_text(f"Произошла ошибка: {e}")
+    finally:
         # Удаляем временный файл после отправки
         if file_path and os.path.exists(file_path):
             os.remove(file_path)

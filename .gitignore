@@ -70,3 +70,10 @@ env.bak/
 venv.bak/
 
 # etc.
+
+# Файлы сессий Telethon
+*.session
+
+# Файлы с результатами парсинга
+*.json
+posts.txt
