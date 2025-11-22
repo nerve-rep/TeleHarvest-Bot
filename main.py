@@ -55,7 +55,10 @@ async def fetch_and_save_posts(channel_url: str, limit: int = 10) -> str:
                     'sender_id': msg.sender_id,
                 })
         
-        file_path = f'posts_{entity.username}.json'
+        # Создаем папку downloads, если она не существует
+        os.makedirs('downloads', exist_ok=True)
+        
+        file_path = f'downloads/posts_{entity.username}.json'
         with open(file_path, 'w', encoding='utf-8') as f:
             json.dump(posts_data, f, ensure_ascii=False, indent=4, default=json_serial)
         
